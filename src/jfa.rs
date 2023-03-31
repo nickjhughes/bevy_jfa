@@ -1,13 +1,13 @@
 use bevy::{
+    core_pipeline::fullscreen_vertex_shader::fullscreen_shader_vertex_state,
     prelude::*,
     render::{
         render_asset::RenderAssets,
         render_graph::{Node, NodeRunError, RenderGraphContext, SlotInfo, SlotType},
-        render_phase::TrackedRenderPass,
         render_resource::{
             BindGroup, CachedRenderPipelineId, ColorTargetState, ColorWrites, FragmentState,
             LoadOp, MultisampleState, Operations, PipelineCache, RenderPassColorAttachment,
-            RenderPassDescriptor, RenderPipelineDescriptor, ShaderType, TextureView, VertexState,
+            RenderPassDescriptor, RenderPipelineDescriptor, ShaderType, TextureView,
         },
         renderer::RenderContext,
     },
@@ -42,6 +42,7 @@ impl Dimensions {
     }
 }
 
+#[derive(Resource)]
 pub struct JfaPipeline {
     cached: CachedRenderPipelineId,
 }
@@ -51,16 +52,11 @@ impl FromWorld for JfaPipeline {
         let res = world.get_resource::<OutlineResources>().unwrap();
         let dimensions_bind_group_layout = res.dimensions_bind_group_layout.clone();
         let jfa_bind_group_layout = res.jfa_bind_group_layout.clone();
-        let mut pipeline_cache = world.get_resource_mut::<PipelineCache>().unwrap();
+        let pipeline_cache = world.get_resource_mut::<PipelineCache>().unwrap();
         let cached = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some("outline_jfa_pipeline".into()),
-            layout: Some(vec![dimensions_bind_group_layout, jfa_bind_group_layout]),
-            vertex: VertexState {
-                shader: JFA_SHADER_HANDLE.typed::<Shader>(),
-                shader_defs: vec![],
-                entry_point: "vertex".into(),
-                buffers: vec![],
-            },
+            layout: vec![dimensions_bind_group_layout, jfa_bind_group_layout],
+            vertex: fullscreen_shader_vertex_state(),
             fragment: Some(FragmentState {
                 shader: JFA_SHADER_HANDLE.typed::<Shader>(),
                 shader_defs: vec![],
@@ -74,6 +70,7 @@ impl FromWorld for JfaPipeline {
             primitive: FULLSCREEN_PRIMITIVE_STATE,
             depth_stencil: None,
             multisample: MultisampleState::default(),
+            push_constant_ranges: Vec::new(),
         });
 
         JfaPipeline { cached }
@@ -197,15 +194,11 @@ impl Node for JfaNode {
                     store: true,
                 },
             };
-            let render_pass =
-                render_context
-                    .command_encoder
-                    .begin_render_pass(&RenderPassDescriptor {
-                        label: Some("outline_jfa"),
-                        color_attachments: &[Some(attachment)],
-                        depth_stencil_attachment: None,
-                    });
-            let mut tracked_pass = TrackedRenderPass::new(render_pass);
+            let mut tracked_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
+                label: Some("outline_jfa"),
+                color_attachments: &[Some(attachment)],
+                depth_stencil_attachment: None,
+            });
             tracked_pass.set_render_pipeline(cached_pipeline);
             tracked_pass.set_bind_group(0, &res.dimensions_bind_group, &[]);
             tracked_pass.set_bind_group(1, src, &[res.jfa_distance_offsets[exp]]);

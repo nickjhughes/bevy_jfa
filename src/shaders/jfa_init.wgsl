@@ -1,4 +1,4 @@
-#import outline::fullscreen
+#import bevy_core_pipeline::fullscreen_vertex_shader
 #import outline::dimensions
 
 // Jump flood initialization pass.
@@ -52,8 +52,8 @@ fn fragment(in: FragmentIn) -> @location(0) vec4<f32> {
         return out_position;
     }
 
-    let dir = normalize(dir);
-    let offset = dir * (1.0 - samples[1][1]) * vec2<f32>(dx, dy);
+    let dir_norm = normalize(dir);
+    let offset = dir_norm * (1.0 - samples[1][1]) * vec2<f32>(dx, dy);
 
     return out_position + vec4<f32>(offset, 0.0, 1.0);
 }

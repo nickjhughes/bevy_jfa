@@ -28,18 +28,19 @@ use bevy::{
     prelude::{AddAsset, Camera3d},
     reflect::TypeUuid,
     render::{
+        extract_component::{ExtractComponent, ExtractComponentPlugin},
         extract_resource::ExtractResource,
         prelude::*,
         render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssets},
         render_graph::RenderGraph,
         render_phase::{
             AddRenderCommand, CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions,
-            EntityPhaseItem, PhaseItem, RenderPhase, SetItemPipeline,
+            PhaseItem, RenderPhase, SetItemPipeline,
         },
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
         view::{ExtractedView, VisibleEntities},
-        Extract, RenderApp, RenderStage,
+        Extract, RenderApp, RenderSet,
     },
     utils::FloatOrd,
 };
@@ -74,7 +75,7 @@ const FULLSCREEN_PRIMITIVE_STATE: PrimitiveState = PrimitiveState {
 pub struct OutlinePlugin;
 
 /// Performance and visual quality settings for JFA-based outlines.
-#[derive(Clone, ExtractResource)]
+#[derive(Clone, Resource, ExtractResource)]
 pub struct OutlineSettings {
     pub(crate) half_resolution: bool,
 }
@@ -105,8 +106,6 @@ const JFA_INIT_SHADER_HANDLE: HandleUntyped =
     HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 11038189062916158841);
 const JFA_SHADER_HANDLE: HandleUntyped =
     HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 5227804998548228051);
-const FULLSCREEN_SHADER_HANDLE: HandleUntyped =
-    HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 12099561278220359682);
 const OUTLINE_SHADER_HANDLE: HandleUntyped =
     HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 11094028876979933159);
 const DIMENSIONS_SHADER_HANDLE: HandleUntyped =
@@ -125,8 +124,6 @@ impl Plugin for OutlinePlugin {
         let mask_shader = Shader::from_wgsl(include_str!("shaders/mask.wgsl"));
         let jfa_init_shader = Shader::from_wgsl(include_str!("shaders/jfa_init.wgsl"));
         let jfa_shader = Shader::from_wgsl(include_str!("shaders/jfa.wgsl"));
-        let fullscreen_shader = Shader::from_wgsl(include_str!("shaders/fullscreen.wgsl"))
-            .with_import_path("outline::fullscreen");
         let outline_shader = Shader::from_wgsl(include_str!("shaders/outline.wgsl"));
         let dimensions_shader = Shader::from_wgsl(include_str!("shaders/dimensions.wgsl"))
             .with_import_path("outline::dimensions");
@@ -134,9 +131,10 @@ impl Plugin for OutlinePlugin {
         shaders.set_untracked(MASK_SHADER_HANDLE, mask_shader);
         shaders.set_untracked(JFA_INIT_SHADER_HANDLE, jfa_init_shader);
         shaders.set_untracked(JFA_SHADER_HANDLE, jfa_shader);
-        shaders.set_untracked(FULLSCREEN_SHADER_HANDLE, fullscreen_shader);
         shaders.set_untracked(OUTLINE_SHADER_HANDLE, outline_shader);
         shaders.set_untracked(DIMENSIONS_SHADER_HANDLE, dimensions_shader);
+
+        app.add_plugin(ExtractComponentPlugin::<Outline>::default());
 
         let render_app = match app.get_sub_app_mut(RenderApp) {
             Ok(r) => r,
@@ -154,31 +152,27 @@ impl Plugin for OutlinePlugin {
             .init_resource::<jfa::JfaPipeline>()
             .init_resource::<outline::OutlinePipeline>()
             .init_resource::<SpecializedRenderPipelines<outline::OutlinePipeline>>()
-            .add_system_to_stage(RenderStage::Extract, extract_outline_settings)
-            .add_system_to_stage(RenderStage::Extract, extract_camera_outlines)
-            .add_system_to_stage(RenderStage::Extract, extract_mask_camera_phase)
-            .add_system_to_stage(RenderStage::Prepare, resources::recreate_outline_resources)
-            .add_system_to_stage(RenderStage::Queue, queue_mesh_masks);
+            .add_system(extract_outline_settings.in_schedule(ExtractSchedule))
+            .add_system(extract_camera_outlines.in_schedule(ExtractSchedule))
+            .add_system(extract_mask_camera_phase.in_schedule(ExtractSchedule))
+            .add_system(resources::recreate_outline_resources.in_set(RenderSet::Prepare))
+            .add_system(queue_mesh_masks.in_set(RenderSet::Queue));
 
         let outline_graph = graph::outline(render_app).unwrap();
 
         let mut root_graph = render_app.world.resource_mut::<RenderGraph>();
         let draw_3d_graph = root_graph.get_sub_graph_mut(core_3d::graph::NAME).unwrap();
-        let draw_3d_input = draw_3d_graph.input_node().unwrap().id;
+        let draw_3d_input = draw_3d_graph.input_node().id;
 
         draw_3d_graph.add_sub_graph(outline_graph::NAME, outline_graph);
         let outline_driver = draw_3d_graph.add_node(OutlineDriverNode::NAME, OutlineDriverNode);
-        draw_3d_graph
-            .add_slot_edge(
-                draw_3d_input,
-                core_3d::graph::input::VIEW_ENTITY,
-                outline_driver,
-                OutlineDriverNode::INPUT_VIEW,
-            )
-            .unwrap();
-        draw_3d_graph
-            .add_node_edge(core_3d::graph::node::MAIN_PASS, outline_driver)
-            .unwrap();
+        draw_3d_graph.add_slot_edge(
+            draw_3d_input,
+            core_3d::graph::input::VIEW_ENTITY,
+            outline_driver,
+            OutlineDriverNode::INPUT_VIEW,
+        );
+        draw_3d_graph.add_node_edge(core_3d::graph::node::MAIN_PASS, outline_driver);
     }
 }
 
@@ -192,18 +186,16 @@ struct MeshMask {
 impl PhaseItem for MeshMask {
     type SortKey = FloatOrd;
 
+    fn entity(&self) -> Entity {
+        self.entity
+    }
+
     fn sort_key(&self) -> Self::SortKey {
         FloatOrd(self.distance)
     }
 
     fn draw_function(&self) -> DrawFunctionId {
         self.draw_function
-    }
-}
-
-impl EntityPhaseItem for MeshMask {
-    fn entity(&self) -> Entity {
-        self.entity
     }
 }
 
@@ -273,7 +265,7 @@ pub struct CameraOutline {
 }
 
 /// Component for entities that should be outlined.
-#[derive(Clone, Debug, PartialEq, Component)]
+#[derive(Clone, Debug, PartialEq, Component, ExtractComponent)]
 pub struct Outline {
     pub enabled: bool,
 }
@@ -314,7 +306,7 @@ fn queue_mesh_masks(
     mut pipelines: ResMut<SpecializedMeshPipelines<MeshMaskPipeline>>,
     mut pipeline_cache: ResMut<PipelineCache>,
     render_meshes: Res<RenderAssets<Mesh>>,
-    outline_meshes: Query<(Entity, &Handle<Mesh>, &MeshUniform)>,
+    outline_meshes: Query<(Entity, &Handle<Mesh>, &MeshUniform), With<Outline>>,
     mut views: Query<(
         &ExtractedView,
         &mut VisibleEntities,

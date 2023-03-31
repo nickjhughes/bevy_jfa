@@ -1,14 +1,14 @@
 use bevy::{
-    pbr::{MeshPipeline, MeshPipelineKey},
+    pbr::{MeshPipeline, MeshPipelineKey, MAX_CASCADES_PER_LIGHT, MAX_DIRECTIONAL_LIGHTS},
     prelude::*,
     render::{
         mesh::InnerMeshVertexBufferLayout,
         render_graph::{Node, RenderGraphContext, SlotInfo, SlotType},
-        render_phase::{DrawFunctions, PhaseItem, RenderPhase, TrackedRenderPass},
+        render_phase::RenderPhase,
         render_resource::{
             ColorTargetState, ColorWrites, FragmentState, LoadOp, MultisampleState, Operations,
             RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
-            SpecializedMeshPipeline, SpecializedMeshPipelineError, TextureFormat,
+            ShaderDefVal, SpecializedMeshPipeline, SpecializedMeshPipelineError, TextureFormat,
         },
         renderer::RenderContext,
     },
@@ -17,6 +17,7 @@ use bevy::{
 
 use crate::{resources::OutlineResources, MeshMask, MASK_SHADER_HANDLE};
 
+#[derive(Resource)]
 pub struct MeshMaskPipeline {
     mesh_pipeline: MeshPipeline,
 }
@@ -39,16 +40,29 @@ impl SpecializedMeshPipeline for MeshMaskPipeline {
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut desc = self.mesh_pipeline.specialize(key, layout)?;
 
-        desc.layout = Some(vec![
-            self.mesh_pipeline.view_layout.clone(),
+        desc.layout = vec![
+            if key.msaa_samples() > 0 {
+                self.mesh_pipeline.view_layout_multisampled.clone()
+            } else {
+                self.mesh_pipeline.view_layout.clone()
+            },
             self.mesh_pipeline.mesh_layout.clone(),
-        ]);
+        ];
 
         desc.vertex.shader = MASK_SHADER_HANDLE.typed::<Shader>();
 
         desc.fragment = Some(FragmentState {
             shader: MASK_SHADER_HANDLE.typed::<Shader>(),
-            shader_defs: vec![],
+            shader_defs: vec![
+                ShaderDefVal::Int(
+                    "MAX_DIRECTIONAL_LIGHTS".to_string(),
+                    MAX_DIRECTIONAL_LIGHTS as i32,
+                ),
+                ShaderDefVal::Int(
+                    "MAX_CASCADES_PER_LIGHT".to_string(),
+                    MAX_CASCADES_PER_LIGHT as i32,
+                ),
+            ],
             entry_point: "fragment".into(),
             targets: vec![Some(ColorTargetState {
                 format: TextureFormat::R8Unorm,
@@ -122,28 +136,20 @@ impl Node for MeshMaskNode {
             Err(_) => return Ok(()),
         };
 
-        let pass_raw = render_context
-            .command_encoder
-            .begin_render_pass(&RenderPassDescriptor {
-                label: Some("outline_stencil_render_pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &res.mask_multisample.default_view,
-                    resolve_target: Some(&res.mask_output.default_view),
-                    ops: Operations {
-                        load: LoadOp::Clear(Color::BLACK.into()),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
-        let mut pass = TrackedRenderPass::new(pass_raw);
+        let mut pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some("outline_stencil_render_pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: &res.mask_multisample.default_view,
+                resolve_target: Some(&res.mask_output.default_view),
+                ops: Operations {
+                    load: LoadOp::Clear(Color::BLACK.into()),
+                    store: true,
+                },
+            })],
+            depth_stencil_attachment: None,
+        });
 
-        let draw_functions = world.get_resource::<DrawFunctions<MeshMask>>().unwrap();
-        let mut draw_functions = draw_functions.write();
-        for item in stencil_phase.items.iter() {
-            let draw_function = draw_functions.get_mut(item.draw_function()).unwrap();
-            draw_function.draw(world, &mut pass, view_entity, item);
-        }
+        stencil_phase.render(&mut pass, world, view_entity);
 
         Ok(())
     }

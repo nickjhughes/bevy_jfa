@@ -18,10 +18,10 @@ default = ["wgpu-profiler"]
 
 [dependencies]
 bitflags = "1"
-wgpu-profiler = { version = "0.9", optional = true }
+wgpu-profiler = { version = "0.11", optional = true }
 
 [dependencies.bevy]
-version = "0.8.0"
+version = "0.10.0"
 default-features = false
 features = [
     "bevy_asset",

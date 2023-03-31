@@ -1,20 +1,19 @@
 use bevy::{
+    core_pipeline::fullscreen_vertex_shader::fullscreen_shader_vertex_state,
     prelude::*,
     render::{
-        camera::ExtractedCamera,
         render_asset::RenderAssets,
         render_graph::{Node, NodeRunError, RenderGraphContext, SlotInfo, SlotType},
-        render_phase::TrackedRenderPass,
         render_resource::{
             BindGroup, BindGroupLayout, BlendComponent, BlendFactor, BlendOperation, BlendState,
             CachedRenderPipelineId, ColorTargetState, ColorWrites, FragmentState, LoadOp,
-            MultisampleState, Operations, PipelineCache, RenderPassColorAttachment,
-            RenderPassDescriptor, RenderPipelineDescriptor, ShaderType, SpecializedRenderPipeline,
+            MultisampleState, Operations, PipelineCache, RenderPassDescriptor,
+            RenderPipelineDescriptor, ShaderType, SpecializedRenderPipeline,
             SpecializedRenderPipelines, TextureFormat, TextureSampleType, TextureUsages,
-            UniformBuffer, VertexState,
+            UniformBuffer,
         },
         renderer::RenderContext,
-        view::ExtractedWindows,
+        view::ViewTarget,
     },
 };
 
@@ -45,7 +44,7 @@ pub struct GpuOutlineParams {
     pub(crate) bind_group: BindGroup,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Resource)]
 pub struct OutlinePipeline {
     dimensions_layout: BindGroupLayout,
     input_layout: BindGroupLayout,
@@ -112,17 +111,12 @@ impl SpecializedRenderPipeline for OutlinePipeline {
 
         RenderPipelineDescriptor {
             label: Some("jfa_outline_pipeline".into()),
-            layout: Some(vec![
+            layout: vec![
                 self.dimensions_layout.clone(),
                 self.input_layout.clone(),
                 self.params_layout.clone(),
-            ]),
-            vertex: VertexState {
-                shader: OUTLINE_SHADER_HANDLE.typed::<Shader>(),
-                shader_defs: vec![],
-                entry_point: "vertex".into(),
-                buffers: vec![],
-            },
+            ],
+            vertex: fullscreen_shader_vertex_state(),
             fragment: Some(FragmentState {
                 shader: OUTLINE_SHADER_HANDLE.typed::<Shader>(),
                 shader_defs: vec![],
@@ -136,17 +130,18 @@ impl SpecializedRenderPipeline for OutlinePipeline {
             primitive: FULLSCREEN_PRIMITIVE_STATE,
             depth_stencil: None,
             multisample: MultisampleState {
-                count: 1,
+                count: 4,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
+            push_constant_ranges: Vec::new(),
         }
     }
 }
 
 pub struct OutlineNode {
     pipeline_id: CachedRenderPipelineId,
-    query: QueryState<(&'static ExtractedCamera, &'static CameraOutline)>,
+    query: QueryState<(&'static ViewTarget, &'static CameraOutline)>,
 }
 
 impl OutlineNode {
@@ -202,16 +197,12 @@ impl Node for OutlineNode {
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), NodeRunError> {
-        let view_ent = graph.get_input_entity(Self::IN_VIEW)?;
-        graph.set_output(Self::OUT_VIEW, view_ent)?;
+        let view_entity = graph.get_input_entity(Self::IN_VIEW)?;
+        graph.set_output(Self::OUT_VIEW, view_entity)?;
 
-        let (camera, outline) = &self.query.get_manual(world, view_ent).unwrap();
-
-        let windows = world.resource::<ExtractedWindows>();
-        let images = world.resource::<RenderAssets<Image>>();
-        let target_view = match camera.target.get_texture_view(windows, images) {
-            Some(v) => v,
-            None => return Ok(()),
+        let (view_target, outline) = match self.query.get_manual(world, view_entity) {
+            Ok(result) => result,
+            Err(_) => return Ok(()),
         };
 
         let styles = world.resource::<RenderAssets<OutlineStyle>>();
@@ -225,23 +216,16 @@ impl Node for OutlineNode {
             None => return Ok(()),
         };
 
-        let render_pass = render_context
-            .command_encoder
-            .begin_render_pass(&RenderPassDescriptor {
-                label: Some("jfa_outline"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: target_view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Load,
-                        store: true,
-                    },
-                })],
-                // TODO: support outlines being occluded by world geometry
-                depth_stencil_attachment: None,
-            });
+        let mut tracked_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some("jfa_outline"),
+            color_attachments: &[Some(view_target.get_color_attachment(Operations {
+                load: LoadOp::Load,
+                store: true,
+            }))],
+            // TODO: support outlines being occluded by world geometry
+            depth_stencil_attachment: None,
+        });
 
-        let mut tracked_pass = TrackedRenderPass::new(render_pass);
         tracked_pass.set_render_pipeline(pipeline);
         tracked_pass.set_bind_group(0, &res.dimensions_bind_group, &[]);
         tracked_pass.set_bind_group(1, &res.outline_src_bind_group, &[]);

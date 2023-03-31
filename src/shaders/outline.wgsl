@@ -1,4 +1,4 @@
-#import outline::fullscreen
+#import bevy_core_pipeline::fullscreen_vertex_shader
 #import outline::dimensions
 
 struct Params {

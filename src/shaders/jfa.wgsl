@@ -1,4 +1,4 @@
-#import outline::fullscreen
+#import bevy_core_pipeline::fullscreen_vertex_shader
 #import outline::dimensions
 
 // Bind group 0 imported from outline::dimensions
